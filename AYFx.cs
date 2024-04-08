@@ -346,64 +346,76 @@ namespace PT3Play
         {
             using (FileStream file = new FileStream(filename, FileMode.Create))
             {
-                int size = MAX_FX_LEN * AllEffect + 260 * AllEffect;
-                byte[] buf = new byte[size];
-                buf[0] = (byte)(AllEffect & 0xff);
-                int pp = 2 * AllEffect + 1;
-
-                for (int aa = 0; aa < AllEffect; aa++)
-                {
-                    int off = pp - aa * 2 - 2;
-                    WrWordLH(buf, 1 + aa * 2, off);
-                    int len = SFX_Encode(aa, buf);
-                    pp += len;
-
-                    if (names && !string.IsNullOrEmpty(AyBank[aa].Name))
-                    {
-                        byte[] nameBytes = System.Text.Encoding.ASCII.GetBytes(AyBank[aa].Name);
-                        nameBytes.CopyTo(buf, pp);
-                        pp += nameBytes.Length;
-                        buf[pp++] = 0;
-                    }
-                }
-
-                file.Write(buf, 0, pp);
-                return true;
+                return SFX_BankSave(file, names);
             }
+        }
+
+        public static bool SFX_BankSave(Stream stream, bool names)
+        {
+            int size = MAX_FX_LEN * AllEffect + 260 * AllEffect;
+            byte[] buf = new byte[size];
+            buf[0] = (byte)(AllEffect & 0xff);
+            int pp = 2 * AllEffect + 1;
+
+            for (int aa = 0; aa < AllEffect; aa++)
+            {
+                int off = pp - aa * 2 - 2;
+                WrWordLH(buf, 1 + aa * 2, off);
+                int len = SFX_Encode(aa, buf);
+                pp += len;
+
+                if (names && !string.IsNullOrEmpty(AyBank[aa].Name))
+                {
+                    byte[] nameBytes = System.Text.Encoding.ASCII.GetBytes(AyBank[aa].Name);
+                    nameBytes.CopyTo(buf, pp);
+                    pp += nameBytes.Length;
+                    buf[pp++] = 0;
+                }
+            }
+
+            stream.Write(buf, 0, pp);
+            stream.Flush();
+
+            return true;
         }
 
         public static bool SFX_BankLoad(string filename)
         {
             using (FileStream file = new FileStream(filename, FileMode.Open))
             {
-                int size = (int)file.Length;
-                byte[] buf = new byte[size];
-                file.Read(buf, 0, size);
+                byte[] buf = new byte[file.Length];
+                
+                file.Read(buf, 0, buf.Length);
 
-                SFX_BankInit();
-
-                AllEffect = buf[0];
-
-                for (int aa = 0; aa < AllEffect; aa++)
-                {
-                    int off = RdWordLH(buf, 1 + aa * 2) + 2 + aa * 2;
-                    int len = (aa < AllEffect - 1) ? RdWordLH(buf, 3 + aa * 2) + 4 + aa * 2 - off : size - off;
-                    int rlen = SFX_Decode(aa, buf, off, len);
-
-                    if (rlen != len)
-                    {
-                        int nul = Array.FindIndex(buf, off + rlen, (x) => x == 0) - (off + rlen);
-                        AyBank[aa].Name = System.Text.Encoding.ASCII.GetString(buf, off + rlen, nul);
-                    }
-                    else
-                    {
-                        string name = $"noname{aa + 1:D3}";
-                        AyBank[aa].Name = name;
-                    }
-                }
-
-                return true;
+                return SFX_BankLoad(buf);
             }
+        }
+
+        public static bool SFX_BankLoad(byte[] buf)
+        {
+            SFX_BankInit();
+
+            AllEffect = buf[0];
+
+            for (int aa = 0; aa < AllEffect; aa++)
+            {
+                int off = RdWordLH(buf, 1 + aa * 2) + 2 + aa * 2;
+                int len = (aa < AllEffect - 1) ? RdWordLH(buf, 3 + aa * 2) + 4 + aa * 2 - off : buf.Length - off;
+                int rlen = SFX_Decode(aa, buf, off, len);
+
+                if (rlen != len)
+                {
+                    int nul = Array.FindIndex(buf, off + rlen, (x) => x == 0) - (off + rlen);
+                    AyBank[aa].Name = System.Text.Encoding.ASCII.GetString(buf, off + rlen, nul);
+                }
+                else
+                {
+                    string name = $"noname{aa + 1:D3}";
+                    AyBank[aa].Name = name;
+                }
+            }
+
+            return true;
         }
 
         private static void WrWordLH(byte[] buf, int off, int value)
