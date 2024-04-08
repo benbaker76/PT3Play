@@ -1,8 +1,6 @@
 ﻿// AYFx by Shiru (http://shiru.untergrund.net)
 // Port to C# by benbaker76 (https://github.com/benbaker76)
 
-using SlimDX.Direct3D9;
-using SlimDX.XACT3;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

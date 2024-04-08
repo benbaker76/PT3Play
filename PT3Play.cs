@@ -4,8 +4,6 @@
 
 using System;
 using System.Runtime.InteropServices;
-using SlimDX.RawInput;
-using System.Windows.Forms;
 using System.Reflection;
 using System.Diagnostics;
 
