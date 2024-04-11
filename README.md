@@ -6,6 +6,13 @@ This is a Pro Tracker 3.x format chip tune music player ported to C#. It plays [
 
 This demo runs on Windows only as it uses the SlimDX (DirectX 9) library for the spectrum analyzer rendering.
 
+## Installation
+
+You need the following libraries installed for SlimDX to work:
+
+- [Microsoft Visual C++ 2010 Service Pack 1 Redistributable Package MFC Security Update](https://www.microsoft.com/en-us/download/details.aspx?id=26999)
+- [DirectX End-User Runtimes (June 2010)](https://www.microsoft.com/en-ie/download/details.aspx?id=8109)
+
 ## Controls
 
 - **Up/Down**: Change song
