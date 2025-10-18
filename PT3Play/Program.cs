@@ -1,18 +1,15 @@
+using SharpDX;
+using SharpDX.Direct3D9;
+using SharpDX.Multimedia;
+using SharpDX.Windows;
+using SharpDX.XAudio2;
 using System;
-using System.Drawing;
-using System.Windows.Forms;
-using System.Runtime.InteropServices;
-using System.IO;
 using System.Collections.Generic;
 using System.Diagnostics;
-
-using SlimDX;
-using SlimDX.Direct3D9;
-using SlimDX.Windows;
-using SlimDX.DirectSound;
-using SlimDX.Multimedia;
-using SlimDX.XAudio2;
-using System.Security.Cryptography;
+using System.Drawing;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
 
 namespace PT3Play
 {
@@ -32,8 +29,7 @@ namespace PT3Play
         private static XAudio2 m_xAudio2 = null;
 		private static MasteringVoice m_masteringVoice = null;
 		private static SourceVoice m_sourceVoice = null;
-		private static AudioBuffer m_audioBuffer = null;
-		private static BinaryWriter m_binaryWriter = null;
+        private static readonly Queue<DataStream> m_pendingStreams = new Queue<DataStream>();
 
         private static Vertex[] m_vertexArray = null;
 		private static VertexBuffer m_vertexBuffer = null;
@@ -66,13 +62,23 @@ namespace PT3Play
             m_form.Show();
 
             m_screenSize = new Size(m_form.ClientSize.Width, m_form.ClientSize.Height);
+            Direct3D direct3D = new Direct3D();
 
-            m_device = new Device(new Direct3D(), 0, SlimDX.Direct3D9.DeviceType.Hardware, m_form.Handle, CreateFlags.HardwareVertexProcessing | CreateFlags.Multithreaded, new PresentParameters()
-			{
-				BackBufferWidth = m_screenSize.Width,
-				BackBufferHeight = m_screenSize.Height,
-				//PresentationInterval = PresentInterval.One
-			});
+            var adapter = 0;
+            var dispMode = direct3D.Adapters[adapter].CurrentDisplayMode;
+
+            m_device = new Device(direct3D, 0, DeviceType.Hardware, m_form.Handle, CreateFlags.HardwareVertexProcessing | CreateFlags.Multithreaded, new PresentParameters()
+            {
+                BackBufferWidth = m_form.ClientSize.Width,
+                BackBufferHeight = m_form.ClientSize.Height,
+                BackBufferFormat = dispMode.Format,
+                BackBufferCount = 1,
+                SwapEffect = SwapEffect.Discard,
+                PresentationInterval = PresentInterval.Immediate,
+                DeviceWindowHandle = m_form.Handle,
+                Windowed = true,
+                EnableAutoDepthStencil = false
+            });
 
             InitVideoEngine(m_screenSize);
             InitAudioEngine();
@@ -90,7 +96,7 @@ namespace PT3Play
             double m_accumulator = 0.0;
             double frameTime = 1.0 / PT3Play.FRAME_RATE;
 
-            MessagePump.Run(m_form, () =>
+            RenderLoop.Run(m_form, () =>
 			{
                 GetKeyboardState(m_currentKeyStates);
 
@@ -153,11 +159,7 @@ namespace PT3Play
                 Array.Copy(m_currentKeyStates, m_previousKeyStates, m_currentKeyStates.Length); 
 			});
 
-			foreach (var item in ObjectTable.Objects)
-				item.Dispose();
-
-            if (m_xAudio2 != null)
-    			m_xAudio2.Dispose();
+            ShutdownAudioEngine();
 		}
 
         public static void InitVideoEngine(Size size)
@@ -178,40 +180,31 @@ namespace PT3Play
         }
 
         public static void InitAudioEngine()
-		{
-			m_xAudio2 = new XAudio2();
-			m_masteringVoice = new MasteringVoice(m_xAudio2);
+        {
+            m_xAudio2 = new XAudio2();
+            m_masteringVoice = new MasteringVoice(m_xAudio2);
 
-			WaveFormat waveFormat = new WaveFormat();
-
-            waveFormat.FormatTag = WaveFormatTag.Pcm;
-            waveFormat.Channels = 2;
-            waveFormat.BitsPerSample = sizeof(short) * 8;
-            waveFormat.SamplesPerSecond = PT3Play.SAMPLE_RATE;
-            waveFormat.BlockAlignment = (short)(waveFormat.Channels * (waveFormat.BitsPerSample / 8));
-            waveFormat.AverageBytesPerSecond = waveFormat.BlockAlignment * waveFormat.SamplesPerSecond;
+            var waveFormat = new WaveFormat(44100, 16, 2);
 
             m_sourceVoice = new SourceVoice(m_xAudio2, waveFormat);
-			m_sourceVoice.StreamEnd += OnStreamEnd;
-			m_sourceVoice.BufferStart += OnBufferStart;
-			m_sourceVoice.BufferEnd += OnBufferEnd;
+            m_sourceVoice.BufferEnd += OnBufferEnd;
+            m_sourceVoice.StreamEnd += OnStreamEnd;
 
-            m_audioBuffer = new AudioBuffer();
-			m_audioBuffer.AudioData = new MemoryStream();
-			//m_audioBuffer.LoopBegin = 0;
-			//m_audioBuffer.LoopLength = 81920 / waveFormat.BlockAlignment;
-			//m_audioBuffer.LoopCount = XAudio2.LoopInfinite;
+            m_sourceVoice.Start();
+        }
 
-			m_binaryWriter = new BinaryWriter(m_audioBuffer.AudioData);
+        public static void ShutdownAudioEngine()
+        {
+            if (m_sourceVoice != null) { m_sourceVoice.DestroyVoice(); m_sourceVoice.Dispose(); m_sourceVoice = null; }
+            if (m_masteringVoice != null) { m_masteringVoice.Dispose(); m_masteringVoice = null; }
+            if (m_xAudio2 != null) { m_xAudio2.Dispose(); m_xAudio2 = null; }
 
-			m_sourceVoice.FlushSourceBuffers();
-			m_sourceVoice.SubmitSourceBuffer(m_audioBuffer);
-			m_sourceVoice.Start();
+            while (m_pendingStreams.Count > 0) m_pendingStreams.Dequeue().Dispose();
         }
 
         private static void Render()
         {
-            m_device.Clear(ClearFlags.Target | ClearFlags.ZBuffer, Color.Black, 1.0f, 0);
+            m_device.Clear(ClearFlags.Target, SharpDX.Color.Black, 1.0f, 0);
             m_device.BeginScene();
 
             m_device.SetRenderState(RenderState.AlphaBlendEnable, true);
@@ -240,7 +233,7 @@ namespace PT3Play
                 m_vertexArray[vertexIndex++] = new Vertex() { Position = new Vector3(x1, y2, 0), Color = (int)PT3Play.spec_colors[i] };
             }
 
-            DataStream dataStream = m_vertexBuffer.Lock(0, 0, SlimDX.Direct3D9.LockFlags.None);
+            DataStream dataStream = m_vertexBuffer.Lock(0, 0, LockFlags.None);
             dataStream.WriteRange(m_vertexArray);
             m_vertexBuffer.Unlock();
 
@@ -253,26 +246,30 @@ namespace PT3Play
             m_device.Present();
         }
 
-        private static void OnStreamEnd(object sender, EventArgs e)
-		{
-            //m_emulator.RenderSounds();
+        private static void OnStreamEnd()
+        {
         }
 
-		private static void OnBufferStart(object sender, ContextEventArgs e)
-		{
-		}
+        private static void OnBufferStart(IntPtr context) { }
 
-		private static void OnBufferEnd(object sender, ContextEventArgs e)
-		{
-		}
+        private static void OnBufferEnd(nint context)
+        {
+            if (m_pendingStreams.Count > 0)
+                m_pendingStreams.Dequeue().Dispose();
+        }
 
-		private static void UpdateAudio()
-		{
-			int bufferSize = PT3Play.SAMPLE_RATE / PT3Play.FRAME_RATE;
+        private static void UpdateAudio()
+        {
+            int bufferSize = PT3Play.SAMPLE_RATE / PT3Play.FRAME_RATE;
+            int channels = 2;
+            int bytesPerSample = sizeof(short);
+            int byteCount = bufferSize * channels * bytesPerSample;
+
+            var ds = new SharpDX.DataStream(byteCount, true, true);
 
             for (int i = 0; i < bufferSize; i++)
             {
-				short music_l, music_r;
+                short music_l, music_r;
                 short sfx_l, sfx_r;
 
                 PT3Play.EmulateSample(out music_l, out music_r);
@@ -281,27 +278,33 @@ namespace PT3Play
                 int sample_l = (music_l + sfx_l) / 2;
                 int sample_r = (music_r + sfx_r) / 2;
 
-                if (sample_l > 32767)
-                    sample_l = 32767;
-                if (sample_r > 32767)
-                    sample_r = 32767;
+                // clamp to 16-bit range
+                if (sample_l > 32767) sample_l = 32767;
+                if (sample_l < -32768) sample_l = -32768;
+                if (sample_r > 32767) sample_r = 32767;
+                if (sample_r < -32768) sample_r = -32768;
 
-                m_binaryWriter.Write((short)sample_l);  // Writing left channel
-                m_binaryWriter.Write((short)sample_r);  // Writing right channel
+                ds.Write((short)sample_l);
+                ds.Write((short)sample_r);
             }
 
+            ds.Position = 0;
+
+            // keep queue from growing too large
             if (m_sourceVoice.State.BuffersQueued > AUDIO_BUFFER_COUNT)
-                 m_sourceVoice.FlushSourceBuffers();
+                m_sourceVoice.FlushSourceBuffers();
 
-            m_audioBuffer.AudioBytes = (int)m_audioBuffer.AudioData.Length;
-            m_audioBuffer.Flags = SlimDX.XAudio2.BufferFlags.EndOfStream;
+            var ab = new SharpDX.XAudio2.AudioBuffer
+            {
+                AudioDataPointer = ds.DataPointer,
+                AudioBytes = byteCount,
+                Flags = SharpDX.XAudio2.BufferFlags.EndOfStream
+            };
 
-            m_audioBuffer.AudioData.Position = 0;
-            m_sourceVoice.SubmitSourceBuffer(m_audioBuffer);
+            m_sourceVoice.SubmitSourceBuffer(ab, null);
 
-            m_audioBuffer.AudioData.SetLength(0);
-
-            //m_soundManager.PlayBuffer(ref e.Samples);
+            // keep the DataStream alive until XAudio2 signals BufferEnd
+            m_pendingStreams.Enqueue(ds);
         }
 
         private static bool IsKeyUp(Keys key)
